@@ -25,11 +25,12 @@ jobs:
 
       - name: Minify UserScript
         run: |
+          mkdir -p dist
           npx terser src/twitch-autoclicker.user.js \
             --compress drop_console=true \
             --mangle reserved=['state','CONFIG'] \
             --output dist/twitch-autoclicker.min.user.js \
-            --comments /^==UserScript==|@/
+            --comments '/^==UserScript==|@/'
 
       - name: Update @version in minified file
         run: |
