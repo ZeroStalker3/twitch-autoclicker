@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Auto Bonus Clicker
 // @namespace    https://github.com/ZeroStalker3/twitch-autoclicker
-// @version      0.0.0
+// @version      2.5.6
 // @description  Автоматический сбор бонусов на Twitch с GUI, логированием и имитацией поведения
 // @author       ZeroYz
 // @match        *://*.twitch.tv/*
