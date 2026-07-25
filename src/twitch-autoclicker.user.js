@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Auto Bonus Clicker
 // @namespace    https://github.com/ZeroStalker3/twitch-autoclicker
-// @version      2.5.4
+// @version      0.0.0
 // @description  Автоматический сбор бонусов на Twitch с GUI, логированием и имитацией поведения
 // @author       ZeroYz
 // @match        *://*.twitch.tv/*
@@ -48,15 +48,14 @@
         isProcessingLogs: false,
         isDragging: false,
         dragOffset: { x: 0, y: 0 },
-
-        // Все таймеры хранятся для гарантированной очисткики
         clickTimeout: null,
         balanceTimeout: null,
         cycleTimeout: null,
         uiUpdateTimeout: null,
         idleTimeout: null,
         humanTimeout: null,
-        observer: null
+        observer: null,
+        frameObserver: null
     };
 
     // === Стили ===
@@ -76,7 +75,6 @@
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
             overflow: hidden;
         }
-
         #Twitchy-header {
             background: linear-gradient(90deg, #5f3570 0%, #8e44ad 100%);
             padding: 12px 16px;
@@ -86,7 +84,6 @@
             cursor: move;
             user-select: none;
         }
-
         #Twitchy-title {
             display: flex;
             align-items: center;
@@ -94,7 +91,6 @@
             font-weight: 600;
             font-size: 14px;
         }
-
         #Twitchy-logo {
             width: 20px;
             height: 20px;
@@ -105,15 +101,12 @@
             justify-content: center;
             font-size: 12px;
         }
-
         #Twitchy-version {
             font-size: 10px;
             color: rgba(255,255,255,0.7);
             margin-left: 4px;
         }
-
         #Twitchy-controls { display: flex; gap: 8px; }
-
         .Twitchy-btn {
             padding: 6px 16px;
             border: none;
@@ -125,24 +118,19 @@
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
-
         #Twitchy-toggle { background: #27ae60; color: white; }
         #Twitchy-toggle:hover { background: #229954; transform: translateY(-1px); }
         #Twitchy-toggle.running { background: #e74c3c; }
         #Twitchy-toggle.running:hover { background: #c0392b; }
-
         #Twitchy-hide, #Twitchy-minimize {
             background: transparent;
             color: white;
             border: 1px solid rgba(255,255,255,0.3);
             padding: 6px 12px;
         }
-
         #Twitchy-hide:hover, #Twitchy-minimize:hover { background: rgba(255,255,255,0.1); }
         #Twitchy-minimize { padding: 6px 10px; font-size: 16px; line-height: 1; }
-
         #Twitchy-content { padding: 16px; }
-
         #Twitchy-status {
             background: rgba(255,255,255,0.05);
             border-radius: 8px;
@@ -151,24 +139,20 @@
             font-size: 13px;
             text-align: center;
         }
-
         #Twitchy-status-text { color: #95a5a6; }
         #Twitchy-status-text.active { color: #2ecc71; font-weight: 600; }
-
         #Twitchy-stats {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
             gap: 10px;
             margin-bottom: 12px;
         }
-
         .Twitchy-stat {
             background: rgba(255,255,255,0.05);
             border-radius: 8px;
             padding: 10px;
             text-align: center;
         }
-
         .Twitchy-stat-label {
             font-size: 10px;
             color: #95a5a6;
@@ -176,13 +160,11 @@
             letter-spacing: 1px;
             margin-bottom: 4px;
         }
-
         .Twitchy-stat-value {
             font-size: 20px;
             font-weight: 700;
             color: #fff;
         }
-
         #Twitchy-log {
             background: rgba(0,0,0,0.3);
             border-radius: 8px;
@@ -192,19 +174,16 @@
             font-size: 11px;
             font-family: 'Consolas', 'Monaco', monospace;
         }
-
         .Twitchy-log-entry {
             padding: 4px 0;
             border-bottom: 1px solid rgba(255,255,255,0.05);
         }
-
         .Twitchy-log-entry:last-child { border-bottom: none; }
         .Twitchy-log-time { color: #95a5a6; margin-right: 8px; }
         .Twitchy-log-success { color: #2ecc71; }
         .Twitchy-log-info { color: #3498db; }
         .Twitchy-log-warning { color: #f39c12; }
         .Twitchy-log-cycle { color: #e67e22; }
-
         #Twitchy-footer {
             padding: 12px 16px;
             background: rgba(0,0,0,0.2);
@@ -212,18 +191,14 @@
             font-size: 10px;
             color: #95a5a6;
         }
-
         #Twitchy-footer a { color: #9b59b6; text-decoration: none; }
-
         #Twitchy-log::-webkit-scrollbar { width: 6px; }
         #Twitchy-log::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 3px; }
         #Twitchy-log::-webkit-scrollbar-thumb { background: rgba(155, 89, 182, 0.5); border-radius: 3px; }
         #Twitchy-log::-webkit-scrollbar-thumb:hover { background: rgba(155, 89, 182, 0.8); }
-
         #Twitchy-autoclicker.minimized { width: auto; }
         #Twitchy-autoclicker.minimized #Twitchy-content,
         #Twitchy-autoclicker.minimized #Twitchy-footer { display: none; }
-
         #Twitchy-uptime { font-size: 11px; color: #95a5a6; margin-top: 4px; }
     `;
 
@@ -235,7 +210,7 @@
             <div id="Twitchy-title">
                 <div id="Twitchy-logo">🎁</div>
                 <span>Twitch AutoClicker</span>
-                <span id="Twitchy-version">v2.5</span>
+                <span id="Twitchy-version">v2.5.5</span>
             </div>
             <div id="Twitchy-controls">
                 <button id="Twitchy-toggle" class="Twitchy-btn">START</button>
@@ -284,7 +259,7 @@
         return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
     }
 
-    // === Система логирования (XSS-safe, батчинг) ===
+    // === Система логирования ===
     function addLog(message, type = 'info') {
         state.logQueue.push({
             message,
@@ -305,10 +280,8 @@
         state.isProcessingLogs = true;
 
         const fragment = document.createDocumentFragment();
-
         while (state.logQueue.length > 0) {
             const { message, type, time } = state.logQueue.shift();
-
             const entry = document.createElement('div');
             entry.className = 'Twitchy-log-entry';
 
@@ -318,22 +291,20 @@
 
             const msgSpan = document.createElement('span');
             msgSpan.className = `Twitchy-log-${type}`;
-            msgSpan.textContent = message; // textContent защищает от XSS
+            msgSpan.textContent = message;
 
             entry.append(timeSpan, msgSpan);
             fragment.insertBefore(entry, fragment.firstChild);
         }
 
         log.insertBefore(fragment, log.firstChild);
-
         while (log.children.length > CONFIG.MAX_LOG_ENTRIES) {
             log.removeChild(log.lastChild);
         }
-
         state.isProcessingLogs = false;
     }
 
-    // === Обновление UI (throttled + объединенный таймер) ===
+    // === Обновление UI ===
     function updateUI() {
         const now = Date.now();
         if (now - state.lastUIUpdate < CONFIG.UI_UPDATE_THROTTLE) return;
@@ -383,7 +354,6 @@
     // === Основная логика ===
     function clickBonusButton() {
         if (state.isChecking) return false;
-
         state.isChecking = true;
         state.checks++;
 
@@ -395,36 +365,27 @@
             );
 
             for (const button of buttons) {
-                // Проверка скрытия через атрибут и наследование
                 const isHidden = button.getAttribute('aria-hidden') === 'true' ||
                                  button.closest('[aria-hidden="true"]');
-
                 if (!isHidden) {
                     state.clicks++;
                     button.click();
-
                     const timeSinceStart = state.startTime ? Math.floor((Date.now() - state.startTime) / 1000) : 0;
                     addLog(`✅ Bonus received! (Total: ${state.clicks}, Time: ${timeSinceStart}s)`, 'success');
-
                     updateUI();
                     return true;
                 }
             }
-
-            if (state.checks % 100 === 0) {
-                updateUI();
-            }
+            if (state.checks % 100 === 0) updateUI();
         } finally {
             state.isChecking = false;
         }
-
         return false;
     }
 
     function checkBalance() {
         const blE = document.querySelector('[data-test-selector="copo-balance-string"] span[class*="ScAnimatedNumber"]');
         if (blE) {
-            // Очистка от неразрывных пробелов и приведение к числу
             const rawValue = blE.textContent || '0';
             state.balance = rawValue.replace(/[\s\u00A0]/g, '');
             addLog(`💰 Balance updated: ${state.balance}`, 'info');
@@ -438,15 +399,12 @@
         updateUI();
     }
 
-    // === Планировщики (рекурсивный setTimeout для истинной рандомизации) ===
+    // === Планировщики ===
     function scheduleClick() {
         if (!state.isRunning) return;
-
         state.clickTimeout = setTimeout(() => {
             if (state.isRunning && !state.isChecking) {
                 clickBonusButton();
-
-                // Исправлено: else if предотвращает двойной вызов
                 const behaviorChance = Math.random();
                 if (behaviorChance < CONFIG.IDLE_BEHAVIOR_CHANCE) {
                     randomIdle();
@@ -460,42 +418,31 @@
 
     function scheduleBalanceCheck() {
         if (!state.isRunning) return;
-
         state.balanceTimeout = setTimeout(() => {
-            if (state.isRunning) {
-                checkBalance();
-            }
+            if (state.isRunning) checkBalance();
             scheduleBalanceCheck();
         }, rand(CONFIG.BALANCE_CHECK_DELAY.min, CONFIG.BALANCE_CHECK_DELAY.max));
     }
 
     function scheduleCycle() {
         if (!state.isRunning) return;
-
         state.cycleTimeout = setTimeout(() => {
-            if (state.isRunning) {
-                startNewCycle();
-            }
+            if (state.isRunning) startNewCycle();
             scheduleCycle();
         }, rand(CONFIG.CYCLE_DELAY.min, CONFIG.CYCLE_DELAY.max));
     }
 
-    // === Имитация человеческого поведения ===
+    // === Имитация поведения ===
     function humanBehavior() {
         const r = Math.random();
-
         if (r < 0.3) {
-            window.scrollBy({
-                top: Math.random() * 300 - 150,
-                behavior: 'smooth'
-            });
+            window.scrollBy({ top: Math.random() * 300 - 150, behavior: 'smooth' });
         } else if (r < 0.5) {
-            const event = new MouseEvent('mousemove', {
+            document.dispatchEvent(new MouseEvent('mousemove', {
                 clientX: Math.random() * window.innerWidth,
                 clientY: Math.random() * window.innerHeight,
                 bubbles: true
-            });
-            document.dispatchEvent(event);
+            }));
         } else if (r < 0.6) {
             state.isChecking = true;
             state.humanTimeout = setTimeout(() => {
@@ -508,7 +455,6 @@
     function randomIdle() {
         const pause = rand(CONFIG.IDLE_DURATION.min, CONFIG.IDLE_DURATION.max);
         addLog(`😴 Idle for ${Math.floor(pause / 1000)}s`, 'warning');
-
         state.isChecking = true;
         state.idleTimeout = setTimeout(() => {
             state.isChecking = false;
@@ -519,55 +465,39 @@
     // === Управление жизненным циклом ===
     function start() {
         if (state.isRunning) return;
-
         state.isRunning = true;
         state.startTime = Date.now();
-
         addLog('⚡ Initializing system...', 'info');
-
         setTimeout(() => startNewCycle(), 500);
-
         scheduleClick();
         scheduleBalanceCheck();
         scheduleCycle();
         scheduleUIUpdate();
-
         updateUI();
-
-        setTimeout(() => {
-            addLog('✔️ System ready. Waiting for bonuses...', 'info');
-        }, 1000);
+        setTimeout(() => addLog('✔️ System ready. Waiting for bonuses...', 'info'), 1000);
     }
 
     function stop() {
         if (!state.isRunning) return;
-
         state.isRunning = false;
-
-        // Очистка всех таймеров (включая отложенные behavior-таймеры)
         clearTimeout(state.clickTimeout);
         clearTimeout(state.balanceTimeout);
         clearTimeout(state.cycleTimeout);
         clearTimeout(state.uiUpdateTimeout);
         clearTimeout(state.idleTimeout);
         clearTimeout(state.humanTimeout);
-
-        // Сброс ссылок на таймеры
         state.clickTimeout = null;
         state.balanceTimeout = null;
         state.cycleTimeout = null;
         state.uiUpdateTimeout = null;
         state.idleTimeout = null;
         state.humanTimeout = null;
-
         if (state.observer) {
             state.observer.disconnect();
             state.observer = null;
         }
-
         const runtime = state.startTime ? Math.floor((Date.now() - state.startTime) / 1000) : 0;
         addLog(`⏸️ Script stopped. Time: ${runtime}s, Bonuses: ${state.clicks}`, 'warning');
-
         state.startTime = null;
         state.isChecking = false;
         updateUI();
@@ -575,16 +505,29 @@
 
     function destroy() {
         stop();
-
         if (gui && gui.parentNode) gui.parentNode.removeChild(gui);
         if (style && style.parentNode) style.parentNode.removeChild(style);
 
-        document.removeEventListener("keydown", keyHandler);
+        // Снимаем глобальный обработчик
+        window.removeEventListener("keydown", keyHandler, true);
+
+        // Снимаем обработчики со всех iframe
+        try {
+            document.querySelectorAll('iframe').forEach(frame => {
+                try { frame.contentWindow?.removeEventListener("keydown", keyHandler, true); } catch(e) {}
+            });
+        } catch(e) {}
+
+        // Останавливаем наблюдатель за фреймами
+        if (state.frameObserver) {
+            state.frameObserver.disconnect();
+            state.frameObserver = null;
+        }
+
         document.removeEventListener("mousemove", mousemoveHandler);
         document.removeEventListener("mouseup", mouseupHandler);
         document.removeEventListener('dblclick', dblclickHandler);
 
-        // Получаем элемент внутри функции для избежания TDZ
         const header = document.getElementById('Twitchy-header');
         if (header) header.removeEventListener("mousedown", mousedownHandler);
 
@@ -592,13 +535,36 @@
         console.log("❌ Script fully destroyed");
     }
 
-    // === Обработчики событий ===
+    // === Глобальный обработчик Ctrl+X (работает в iframe и после HIDE) ===
     function keyHandler(event) {
-        if (event.ctrlKey && event.key.toLowerCase() === "x") {
+        if (event.ctrlKey && event.code === 'KeyX') {
+            event.preventDefault();
+            event.stopImmediatePropagation();
             destroy();
         }
     }
 
+    // Регистрируем на window (основной документ)
+    window.addEventListener("keydown", keyHandler, true);
+
+    // Инъекция в iframe для перехвата событий внутри чата/плеера
+    function attachKeyHandlerToFrames() {
+        try {
+            document.querySelectorAll('iframe').forEach(frame => {
+                try {
+                    frame.contentWindow?.addEventListener("keydown", keyHandler, true);
+                } catch (e) { /* cross-origin iframe — игнорируем */ }
+            });
+        } catch (e) { /* ignore */ }
+    }
+
+    attachKeyHandlerToFrames();
+
+    // Наблюдаем за динамическим появлением новых iframe
+    state.frameObserver = new MutationObserver(() => attachKeyHandlerToFrames());
+    state.frameObserver.observe(document.body, { childList: true, subtree: true });
+
+    // === Обработчики GUI ===
     function mousedownHandler(e) {
         if (e.target.tagName === 'BUTTON') return;
         state.isDragging = true;
@@ -640,8 +606,6 @@
         btn.textContent = gui.classList.contains('minimized') ? '+' : '−';
     });
 
-    document.addEventListener("keydown", keyHandler);
-
     const header = document.getElementById('Twitchy-header');
     header.addEventListener('mousedown', mousedownHandler);
     document.addEventListener('mousemove', mousemoveHandler);
@@ -652,7 +616,7 @@
     addLog('📡 Waiting for start...', 'info');
     updateUI();
 
-    console.log('🎁 Twitch AutoClicker GUI loaded! (v2.5)');
+    console.log('🎁 Twitch AutoClicker GUI loaded! (v2.5.5)');
     console.log('💡 Click START to begin working');
     console.log('❗ Ctrl + X ends the scripts');
 })();
