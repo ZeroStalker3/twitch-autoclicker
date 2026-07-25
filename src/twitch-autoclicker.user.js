@@ -210,7 +210,7 @@
             <div id="Twitchy-title">
                 <div id="Twitchy-logo">🎁</div>
                 <span>Twitch AutoClicker</span>
-                <span id="Twitchy-version">v2.5.5</span>
+                <span id="Twitchy-version">v...</span>
             </div>
             <div id="Twitchy-controls">
                 <button id="Twitchy-toggle" class="Twitchy-btn">START</button>
@@ -246,6 +246,14 @@
 
     document.head.appendChild(style);
     document.body.appendChild(gui);
+
+    requestAnimationFrame(() => {
+        const versionEl = document.getElementById('Twitchy-version');
+        if (versionEl) {
+            const ver = (typeof GM_info !== 'undefined') ? GM_info.script.version : null;
+            versionEl.textContent = ver ? `v${ver}` : '';
+        }
+    });
 
     // === Утилиты ===
     function rand(min, max) {
