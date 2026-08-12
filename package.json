@@ -3,7 +3,9 @@
   "private": true,
   "version": "2.6.0",
   "scripts": {
-    "preversion": "node -e \"const fs=require('fs'); const v=require('./package.json').version; let c=fs.readFileSync('src/twitch-autoclicker.user.js','utf8'); c=c.replace(/@version\\s+[0-9.]+/, '@version      '+v); fs.writeFileSync('src/twitch-autoclicker.user.js',c); console.log('Synced @version to '+v);\""
+    "release:patch": "npm version patch --no-git-tag-version && node sync-version.js && git add . && git commit -m \"chore: bump to v$(node -p \"require('./package.json').version\")\" && git tag v$(node -p \"require('./package.json').version\") && git push && git push --tags",
+    "release:minor": "npm version minor --no-git-tag-version && node sync-version.js && git add . && git commit -m \"chore: bump to v$(node -p \"require('./package.json').version\")\" && git tag v$(node -p \"require('./package.json').version\") && git push && git push --tags",
+    "release:major": "npm version major --no-git-tag-version && node sync-version.js && git add . && git commit -m \"chore: bump to v$(node -p \"require('./package.json').version\")\" && git tag v$(node -p \"require('./package.json').version\") && git push && git push --tags"
   },
   "devDependencies": {
     "terser": "^5.31.0"
