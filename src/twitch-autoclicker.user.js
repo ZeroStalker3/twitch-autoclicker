@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Auto Bonus Clicker
 // @namespace    https://github.com/ZeroStalker3/twitch-autoclicker
-// @version      2.5.9
+// @version      2.6
 // @description  Автоматический сбор бонусов на Twitch с GUI, логированием и имитацией поведения
 // @author       ZeroYz
 // @match        *://*.twitch.tv/*
@@ -32,7 +32,9 @@
         HUMAN_BEHAVIOR_CHANCE: 0.15,
         IDLE_BEHAVIOR_CHANCE: 0.05,
         IDLE_DURATION: { min: 10000, max: 30000 },
-        HUMAN_PAUSE_DURATION: { min: 1000, max: 3000 }
+        HUMAN_PAUSE_DURATION: { min: 1000, max: 3000 },
+        NETWORK_RETRY_COOLDOWN: 8000,  // pause
+        NETWORK_MAX_ATTEMPTS: 3       
     };
 
     let state = {
@@ -55,7 +57,11 @@
         idleTimeout: null,
         humanTimeout: null,
         observer: null,
-        frameObserver: null
+        frameObserver: null,
+        networkAttempts: 0,
+        lastNetworkClick: 0,
+        lastStrongCheck: 0,      
+        lastStrongResult: false   
     };
 
     // === Стили ===
@@ -359,6 +365,76 @@
         }, CONFIG.UI_UPDATE_INTERVAL);
     }
 
+    function isVisible(el) {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 2 && r.height > 2;
+    }
+
+    function simulateClick(el) {
+        const r = el.getBoundingClientRect();
+        const opts = {
+            bubbles: true, cancelable: true, view: window,
+            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+            button: 0
+        };
+        el.dispatchEvent(new PointerEvent('pointerdown', opts));
+        el.dispatchEvent(new MouseEvent('mousedown', opts));
+        el.dispatchEvent(new PointerEvent('pointerup', opts));
+        el.dispatchEvent(new MouseEvent('mouseup', opts));
+        el.dispatchEvent(new MouseEvent('click', opts));
+    }
+
+    function checkNetworkError() {
+        try {
+            const now = Date.now();
+
+            // Кэш: проверка strong не чаще раза в 2 секунды
+            if (now - state.lastStrongCheck > 2000) {
+                state.lastStrongResult = false;
+                for (const s of document.querySelectorAll('strong')) {
+                    const t = (s.textContent || '').toLowerCase();
+                    if (t.includes('ошибка сети') || t.includes('network error') || /#\s*\d{4}/.test(t)) {
+                        state.lastStrongResult = true;
+                        break;
+                    }
+                }
+                state.lastStrongCheck = now;
+            }
+            if (!state.lastStrongResult) {
+                state.networkAttempts = 0;
+                return false;
+            }
+
+            if (now - state.lastNetworkClick < CONFIG.NETWORK_RETRY_COOLDOWN) return true;
+
+            let btn = null;
+            for (const label of document.querySelectorAll('[data-a-target="tw-core-button-label-text"]')) {
+                const t = (label.textContent || '').toLowerCase();
+                if (t.includes('перезагрузить') || t.includes('refresh') || t.includes('reload')) {
+                    const b = label.closest('button');
+                    if (isVisible(b)) { btn = b; break; }
+                }
+            }
+            if (!btn) return true;
+
+            simulateClick(btn);
+            state.lastNetworkClick = now;
+            state.networkAttempts++;
+            addLog(`🔄 Network error! Refresh attempt ${state.networkAttempts}...`, 'warning');
+
+            if (state.networkAttempts >= CONFIG.NETWORK_MAX_ATTEMPTS) {
+                addLog('⚠️ Refresh failed. Reloading page...', 'warning');
+                sessionStorage.setItem('TwitchyAutoStart', '1');
+                setTimeout(() => location.reload(), 1000);
+            }
+            return true;
+        } catch (e) {
+            console.error('Error checking network overlay:', e);
+        }
+        return false;
+    }
+
     // === Основная логика ===
     function clickBonusButton() {
         if (state.isChecking) return false;
@@ -412,7 +488,11 @@
         if (!state.isRunning) return;
         state.clickTimeout = setTimeout(() => {
             if (state.isRunning && !state.isChecking) {
-                clickBonusButton();
+                // Сначала проверяем ошибку сети
+                if (!checkNetworkError()) {
+                    clickBonusButton();
+                }
+                
                 const behaviorChance = Math.random();
                 if (behaviorChance < CONFIG.IDLE_BEHAVIOR_CHANCE) {
                     randomIdle();
@@ -516,17 +596,14 @@
         if (gui && gui.parentNode) gui.parentNode.removeChild(gui);
         if (style && style.parentNode) style.parentNode.removeChild(style);
 
-        // Снимаем глобальный обработчик
         window.removeEventListener("keydown", keyHandler, true);
 
-        // Снимаем обработчики со всех iframe
         try {
             document.querySelectorAll('iframe').forEach(frame => {
                 try { frame.contentWindow?.removeEventListener("keydown", keyHandler, true); } catch(e) {}
             });
         } catch(e) {}
 
-        // Останавливаем наблюдатель за фреймами
         if (state.frameObserver) {
             state.frameObserver.disconnect();
             state.frameObserver = null;
@@ -543,7 +620,6 @@
         console.log("❌ Script fully destroyed");
     }
 
-    // === Глобальный обработчик Ctrl+X (работает в iframe и после HIDE) ===
     function keyHandler(event) {
         if (event.ctrlKey && event.code === 'KeyX') {
             event.preventDefault();
@@ -552,27 +628,34 @@
         }
     }
 
-    // Регистрируем на window (основной документ)
     window.addEventListener("keydown", keyHandler, true);
 
-    // Инъекция в iframe для перехвата событий внутри чата/плеера
     function attachKeyHandlerToFrames() {
         try {
             document.querySelectorAll('iframe').forEach(frame => {
                 try {
                     frame.contentWindow?.addEventListener("keydown", keyHandler, true);
-                } catch (e) { /* cross-origin iframe — игнорируем */ }
+                } catch (e) { }
             });
-        } catch (e) { /* ignore */ }
+        } catch (e) { }
     }
 
     attachKeyHandlerToFrames();
 
-    // Наблюдаем за динамическим появлением новых iframe
-    state.frameObserver = new MutationObserver(() => attachKeyHandlerToFrames());
+    let attachTimer = null;
+    state.frameObserver = new MutationObserver((mutations) => {
+        const hasNewNode = mutations.some(m => m.addedNodes.length > 0);
+        if (!hasNewNode) return;
+        
+        // Throttle: не чаще раза в 2 секунды
+        if (attachTimer) return;
+        attachTimer = setTimeout(() => {
+            attachTimer = null;
+            attachKeyHandlerToFrames();
+        }, 2000);
+    });
     state.frameObserver.observe(document.body, { childList: true, subtree: true });
 
-    // === Обработчики GUI ===
     function mousedownHandler(e) {
         if (e.target.tagName === 'BUTTON') return;
         state.isDragging = true;
@@ -599,7 +682,6 @@
         }
     }
 
-    // === Инициализация ===
     document.getElementById('Twitchy-toggle').addEventListener('click', () => {
         state.isRunning ? stop() : start();
     });
@@ -624,7 +706,12 @@
     addLog('📡 Waiting for start...', 'info');
     updateUI();
 
-    console.log('🎁 Twitch AutoClicker GUI loaded! (v2.5.5)');
+    console.log('🎁 Twitch AutoClicker GUI loaded! (v2.6)');
     console.log('💡 Click START to begin working');
     console.log('❗ Ctrl + X ends the scripts');
+    if (sessionStorage.getItem('TwitchyAutoStart') === '1') {
+        sessionStorage.removeItem('TwitchyAutoStart');
+        addLog('♻️ Auto-restart after reload...', 'cycle');
+        setTimeout(start, 4000);
+    }
 })();
