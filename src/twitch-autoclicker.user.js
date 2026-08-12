@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Auto Bonus Clicker
 // @namespace    https://github.com/ZeroStalker3/twitch-autoclicker
-// @version      2.6
+// @version      2.6.0
 // @description  Автоматический сбор бонусов на Twitch с GUI, логированием и имитацией поведения
 // @author       ZeroYz
 // @match        *://*.twitch.tv/*
@@ -706,7 +706,7 @@
     addLog('📡 Waiting for start...', 'info');
     updateUI();
 
-    console.log('🎁 Twitch AutoClicker GUI loaded! (v2.6)');
+    console.log('🎁 Twitch AutoClicker GUI loaded! (v2.6.0)');
     console.log('💡 Click START to begin working');
     console.log('❗ Ctrl + X ends the scripts');
     if (sessionStorage.getItem('TwitchyAutoStart') === '1') {

@@ -1,7 +1,7 @@
 {
   "name": "twitch-autoclicker",
   "private": true,
-  "version": "2.6",
+  "version": "2.6.0",
   "scripts": {
     "preversion": "node -e \"const fs=require('fs'); const v=require('./package.json').version; let c=fs.readFileSync('src/twitch-autoclicker.user.js','utf8'); c=c.replace(/@version\\s+[0-9.]+/, '@version      '+v); fs.writeFileSync('src/twitch-autoclicker.user.js',c); console.log('Synced @version to '+v);\""
   },
