@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Twitch Auto Bonus Clicker
 // @namespace    https://github.com/ZeroStalker3/twitch-autoclicker
-// @version      3.0.0
+// @version      3.1.0
 // @description  Автоматический сбор бонусов на Twitch с GUI, логированием и имитацией поведения
 // @author       ZeroYz
 // @match        *://*.twitch.tv/*
 // @run-at       document-idle
 // @license      MIT
+// @grant        GM_info
 // @supportURL   https://github.com/ZeroStalker3/twitch-autoclicker/issues
 // @updateURL    https://github.com/ZeroStalker3/twitch-autoclicker/releases/latest/download/twitch-autoclicker.min.user.js
 // @downloadURL  https://github.com/ZeroStalker3/twitch-autoclicker/releases/latest/download/twitch-autoclicker.min.user.js
@@ -23,45 +24,72 @@
     window.__TWITCHY_RUNNING__ = true;
 
     const CONFIG = {
-        CLICK_DELAY: { min: 1500, max: 3500 },
-        BALANCE_CHECK_DELAY: { min: 65000, max: 125000 },
-        CYCLE_DELAY: { min: 35000, max: 65000 },
+        TICK_INTERVAL: 1500,             // единый цикл проверки
+        BALANCE_CHECK_EVERY: 50,         // каждые N тиков (~65-125 сек)
+        CYCLE_EVERY: 30,                 // каждые N тиков (~35-65 сек)
         UI_UPDATE_INTERVAL: 1000,
         UI_UPDATE_THROTTLE: 100,
         MAX_LOG_ENTRIES: 50,
-        HUMAN_BEHAVIOR_CHANCE: 0.15,
-        IDLE_BEHAVIOR_CHANCE: 0.05,
+        HUMAN_BEHAVIOR_CHANCE: 0.08,     // снижено: имитация реже
+        IDLE_BEHAVIOR_CHANCE: 0.03,
         IDLE_DURATION: { min: 10000, max: 30000 },
         HUMAN_PAUSE_DURATION: { min: 1000, max: 3000 },
-        NETWORK_RETRY_COOLDOWN: 8000,  // pause
-        NETWORK_MAX_ATTEMPTS: 3       
+        NETWORK_RETRY_COOLDOWN: 8000,
+        NETWORK_MAX_ATTEMPTS: 3,
+        SELECTORS: {
+            CLAIM: '[data-test-selector="claim-button"], ' +
+                   'button[aria-label="Claim Bonus"], ' +
+                   'button[aria-label="Получить бонус"]',
+            BALANCE: '[data-test-selector="copo-balance-string"] span[class*="ScAnimatedNumber"]',
+            REWARD_POPUP: '[class*="rewards-popover"], [id*="channel-points-reward-center"]',
+            BUTTON_LABEL: '[data-a-target="tw-core-button-label-text"]'
+        }
+    };
+
+    // Кэш DOM-ссылок (заполняется при старте)
+    const domCache = {
+        clicksEl: null,
+        balanceEl: null,
+        cyclesEl: null,
+        uptimeEl: null,
+        statusText: null,
+        toggleBtn: null,
+        log: null,
+        gui: null,
+        header: null
     };
 
     let state = {
         isRunning: false,
         clicks: 0,
         checks: 0,
-        balance: 0,
+        balance: '0',
         cycles: 0,
         startTime: null,
-        isChecking: false,
+        tickCounter: 0,
         lastUIUpdate: 0,
         logQueue: [],
         isProcessingLogs: false,
         isDragging: false,
         dragOffset: { x: 0, y: 0 },
-        clickTimeout: null,
-        balanceTimeout: null,
-        cycleTimeout: null,
+        mainLoopTimeout: null,
         uiUpdateTimeout: null,
         idleTimeout: null,
         humanTimeout: null,
-        observer: null,
         frameObserver: null,
-        networkAttempts: 0,
-        lastNetworkClick: 0,
-        lastStrongCheck: 0,      
-        lastStrongResult: false   
+        bonusObserver: null,
+        claimButtonCache: {
+            nodes: [],
+            lastUpdate: 0,
+            valid: false
+        },
+        network: {
+            attempts: 0,
+            lastClick: 0,
+            lastStrongCheck: 0,
+            lastStrongResult: false
+        },
+        pendingClick: false
     };
 
     // === Стили ===
@@ -253,6 +281,20 @@
     document.head.appendChild(style);
     document.body.appendChild(gui);
 
+    // === Кэш DOM-ссылок (один раз) ===
+    function initDOMCache() {
+        domCache.clicksEl = document.getElementById('Twitchy-clicks');
+        domCache.balanceEl = document.getElementById('Twitchy-balance');
+        domCache.cyclesEl = document.getElementById('Twitchy-cycles');
+        domCache.uptimeEl = document.getElementById('Twitchy-uptime');
+        domCache.statusText = document.getElementById('Twitchy-status-text');
+        domCache.toggleBtn = document.getElementById('Twitchy-toggle');
+        domCache.log = document.getElementById('Twitchy-log');
+        domCache.gui = document.getElementById('Twitchy-autoclicker');
+        domCache.header = document.getElementById('Twitchy-header');
+    }
+    initDOMCache();
+
     requestAnimationFrame(() => {
         const versionEl = document.getElementById('Twitchy-version');
         if (versionEl) {
@@ -273,6 +315,11 @@
         return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
     }
 
+    // requestIdleCallback с fallback
+    const scheduleIdle = window.requestIdleCallback 
+        ? (cb) => requestIdleCallback(cb, { timeout: 1000 })
+        : (cb) => setTimeout(cb, 50);
+
     // === Система логирования ===
     function addLog(message, type = 'info') {
         state.logQueue.push({
@@ -281,17 +328,16 @@
             time: new Date().toLocaleTimeString('ru-RU', { hour12: false })
         });
         if (!state.isProcessingLogs) {
-            requestAnimationFrame(processLogs);
+            state.isProcessingLogs = true;
+            scheduleIdle(processLogs);
         }
     }
 
     function processLogs() {
-        const log = document.getElementById('Twitchy-log');
-        if (!log || state.logQueue.length === 0) {
+        if (!domCache.log || state.logQueue.length === 0) {
             state.isProcessingLogs = false;
             return;
         }
-        state.isProcessingLogs = true;
 
         const fragment = document.createDocumentFragment();
         while (state.logQueue.length > 0) {
@@ -311,47 +357,40 @@
             fragment.insertBefore(entry, fragment.firstChild);
         }
 
-        log.insertBefore(fragment, log.firstChild);
-        while (log.children.length > CONFIG.MAX_LOG_ENTRIES) {
-            log.removeChild(log.lastChild);
+        domCache.log.insertBefore(fragment, domCache.log.firstChild);
+        while (domCache.log.children.length > CONFIG.MAX_LOG_ENTRIES) {
+            domCache.log.removeChild(domCache.log.lastChild);
         }
         state.isProcessingLogs = false;
     }
 
-    // === Обновление UI ===
+    // === Обновление UI (кэш + throttle) ===
     function updateUI() {
         const now = Date.now();
         if (now - state.lastUIUpdate < CONFIG.UI_UPDATE_THROTTLE) return;
         state.lastUIUpdate = now;
 
         requestAnimationFrame(() => {
-            const clicksEl = document.getElementById('Twitchy-clicks');
-            const balanceEl = document.getElementById('Twitchy-balance');
-            const cyclesEl = document.getElementById('Twitchy-cycles');
-            const uptimeEl = document.getElementById('Twitchy-uptime');
-            const statusText = document.getElementById('Twitchy-status-text');
-            const toggleBtn = document.getElementById('Twitchy-toggle');
+            if (domCache.clicksEl) domCache.clicksEl.textContent = state.clicks;
+            if (domCache.balanceEl) domCache.balanceEl.textContent = state.balance;
+            if (domCache.cyclesEl) domCache.cyclesEl.textContent = state.cycles;
 
-            if (clicksEl) clicksEl.textContent = state.clicks;
-            if (balanceEl) balanceEl.textContent = state.balance;
-            if (cyclesEl) cyclesEl.textContent = state.cycles;
-
-            if (uptimeEl) {
+            if (domCache.uptimeEl) {
                 const uptime = state.startTime ? Date.now() - state.startTime : 0;
-                uptimeEl.textContent = `Uptime: ${formatTime(uptime)}`;
+                domCache.uptimeEl.textContent = `Uptime: ${formatTime(uptime)}`;
             }
 
-            if (statusText && toggleBtn) {
+            if (domCache.statusText && domCache.toggleBtn) {
                 if (state.isRunning) {
-                    statusText.textContent = '🟢 Active | Waiting...';
-                    statusText.className = 'active';
-                    toggleBtn.textContent = 'STOP';
-                    toggleBtn.className = 'Twitchy-btn running';
+                    domCache.statusText.textContent = '🟢 Active | Waiting...';
+                    domCache.statusText.className = 'active';
+                    domCache.toggleBtn.textContent = 'STOP';
+                    domCache.toggleBtn.className = 'Twitchy-btn running';
                 } else {
-                    statusText.textContent = '🔴 Stopped';
-                    statusText.className = '';
-                    toggleBtn.textContent = 'START';
-                    toggleBtn.className = 'Twitchy-btn';
+                    domCache.statusText.textContent = '🔴 Stopped';
+                    domCache.statusText.className = '';
+                    domCache.toggleBtn.textContent = 'START';
+                    domCache.toggleBtn.className = 'Twitchy-btn';
                 }
             }
         });
@@ -385,31 +424,35 @@
         el.dispatchEvent(new MouseEvent('click', opts));
     }
 
+    // === Проверка ошибки сети (с кэшем) ===
     function checkNetworkError() {
         try {
             const now = Date.now();
 
-            // Кэш: проверка strong не чаще раза в 2 секунды
-            if (now - state.lastStrongCheck > 2000) {
-                state.lastStrongResult = false;
-                for (const s of document.querySelectorAll('strong')) {
+            // Кэш strong-элементов на 2 секунды
+            if (now - state.network.lastStrongCheck > 2000) {
+                state.network.lastStrongResult = false;
+                const strongs = document.querySelectorAll('strong');
+                for (const s of strongs) {
                     const t = (s.textContent || '').toLowerCase();
                     if (t.includes('ошибка сети') || t.includes('network error') || /#\s*\d{4}/.test(t)) {
-                        state.lastStrongResult = true;
+                        state.network.lastStrongResult = true;
                         break;
                     }
                 }
-                state.lastStrongCheck = now;
+                state.network.lastStrongCheck = now;
             }
-            if (!state.lastStrongResult) {
-                state.networkAttempts = 0;
+
+            if (!state.network.lastStrongResult) {
+                state.network.attempts = 0;
                 return false;
             }
 
-            if (now - state.lastNetworkClick < CONFIG.NETWORK_RETRY_COOLDOWN) return true;
+            if (now - state.network.lastClick < CONFIG.NETWORK_RETRY_COOLDOWN) return true;
 
             let btn = null;
-            for (const label of document.querySelectorAll('[data-a-target="tw-core-button-label-text"]')) {
+            const labels = document.querySelectorAll(CONFIG.SELECTORS.BUTTON_LABEL);
+            for (const label of labels) {
                 const t = (label.textContent || '').toLowerCase();
                 if (t.includes('перезагрузить') || t.includes('refresh') || t.includes('reload')) {
                     const b = label.closest('button');
@@ -419,11 +462,11 @@
             if (!btn) return true;
 
             simulateClick(btn);
-            state.lastNetworkClick = now;
-            state.networkAttempts++;
-            addLog(`🔄 Network error! Refresh attempt ${state.networkAttempts}...`, 'warning');
+            state.network.lastClick = now;
+            state.network.attempts++;
+            addLog(`🔄 Network error! Refresh attempt ${state.network.attempts}...`, 'warning');
 
-            if (state.networkAttempts >= CONFIG.NETWORK_MAX_ATTEMPTS) {
+            if (state.network.attempts >= CONFIG.NETWORK_MAX_ATTEMPTS) {
                 addLog('⚠️ Refresh failed. Reloading page...', 'warning');
                 sessionStorage.setItem('TwitchyAutoStart', '1');
                 setTimeout(() => location.reload(), 1000);
@@ -435,89 +478,63 @@
         return false;
     }
 
+    // === Валидация кнопки сбора ===
+    function isClaimButton(button) {
+        if (button.closest(CONFIG.SELECTORS.REWARD_POPUP)) {
+            return false;
+        }
+        const label = (button.getAttribute('aria-label') || '').toLowerCase();
+        return !(
+            label.includes('узнайте больше') || label.includes('learn more') ||
+            label.includes('другие параметры') || label.includes('other options') ||
+            label.includes('закрыть') || label.includes('close')
+        );
+    }
+
+    // === Обновление кэша кнопок (вызывается MutationObserver) ===
+    function updateClaimButtonsCache() {
+        state.claimButtonCache.nodes = Array.from(document.querySelectorAll(CONFIG.SELECTORS.CLAIM));
+        state.claimButtonCache.valid = true;
+        state.claimButtonCache.lastUpdate = Date.now();
+    }
+
     // === Основная логика ===
-    function clickBonusButton() {
-        if (state.isChecking) return false;
-        state.isChecking = true;
-        state.checks++;
+    function tryClickBonus() {
+        if (!state.claimButtonCache.valid || state.claimButtonCache.nodes.length === 0) {
+            return false;
+        }
 
-        try {
-            const buttons = document.querySelectorAll(
-                'button[aria-label*="бонус"], button[aria-label*="Bonus"], ' +
-                '[data-test-selector="claim-button"], button[aria-label="Claim Bonus"], ' +
-                'button[aria-label="Получить бонус"]'
-            );
+        for (const button of state.claimButtonCache.nodes) {
+            // Проверяем, что кнопка ещё в DOM
+            if (!button.isConnected) continue;
 
-            for (const button of buttons) {
-                const isHidden = button.getAttribute('aria-hidden') === 'true' ||
-                                 button.closest('[aria-hidden="true"]');
-                if (!isHidden) {
-                    state.clicks++;
-                    button.click();
-                    const timeSinceStart = state.startTime ? Math.floor((Date.now() - state.startTime) / 1000) : 0;
-                    addLog(`✅ Bonus received! (Total: ${state.clicks}, Time: ${timeSinceStart}s)`, 'success');
-                    updateUI();
-                    return true;
-                }
+            const isHidden = button.getAttribute('aria-hidden') === 'true' ||
+                             button.closest('[aria-hidden="true"]');
+
+            if (!isHidden && isClaimButton(button)) {
+                state.clicks++;
+                button.click();
+                const timeSinceStart = state.startTime ? Math.floor((Date.now() - state.startTime) / 1000) : 0;
+                addLog(`✅ Bonus received! (Total: ${state.clicks}, Time: ${timeSinceStart}s)`, 'success');
+                state.claimButtonCache.valid = false;
+                return true;
             }
-            if (state.checks % 100 === 0) updateUI();
-        } finally {
-            state.isChecking = false;
         }
         return false;
     }
 
     function checkBalance() {
-        const blE = document.querySelector('[data-test-selector="copo-balance-string"] span[class*="ScAnimatedNumber"]');
+        const blE = document.querySelector(CONFIG.SELECTORS.BALANCE);
         if (blE) {
             const rawValue = blE.textContent || '0';
             state.balance = rawValue.replace(/[\s\u00A0]/g, '');
             addLog(`💰 Balance updated: ${state.balance}`, 'info');
-            updateUI();
         }
     }
 
     function startNewCycle() {
         state.cycles++;
         addLog(`🔄 Starting cycle #${state.cycles}...`, 'cycle');
-        updateUI();
-    }
-
-    // === Планировщики ===
-    function scheduleClick() {
-        if (!state.isRunning) return;
-        state.clickTimeout = setTimeout(() => {
-            if (state.isRunning && !state.isChecking) {
-                // Сначала проверяем ошибку сети
-                if (!checkNetworkError()) {
-                    clickBonusButton();
-                }
-                
-                const behaviorChance = Math.random();
-                if (behaviorChance < CONFIG.IDLE_BEHAVIOR_CHANCE) {
-                    randomIdle();
-                } else if (behaviorChance < CONFIG.HUMAN_BEHAVIOR_CHANCE) {
-                    humanBehavior();
-                }
-            }
-            scheduleClick();
-        }, rand(CONFIG.CLICK_DELAY.min, CONFIG.CLICK_DELAY.max));
-    }
-
-    function scheduleBalanceCheck() {
-        if (!state.isRunning) return;
-        state.balanceTimeout = setTimeout(() => {
-            if (state.isRunning) checkBalance();
-            scheduleBalanceCheck();
-        }, rand(CONFIG.BALANCE_CHECK_DELAY.min, CONFIG.BALANCE_CHECK_DELAY.max));
-    }
-
-    function scheduleCycle() {
-        if (!state.isRunning) return;
-        state.cycleTimeout = setTimeout(() => {
-            if (state.isRunning) startNewCycle();
-            scheduleCycle();
-        }, rand(CONFIG.CYCLE_DELAY.min, CONFIG.CYCLE_DELAY.max));
     }
 
     // === Имитация поведения ===
@@ -532,9 +549,7 @@
                 bubbles: true
             }));
         } else if (r < 0.6) {
-            state.isChecking = true;
             state.humanTimeout = setTimeout(() => {
-                state.isChecking = false;
                 state.humanTimeout = null;
             }, rand(CONFIG.HUMAN_PAUSE_DURATION.min, CONFIG.HUMAN_PAUSE_DURATION.max));
         }
@@ -543,57 +558,161 @@
     function randomIdle() {
         const pause = rand(CONFIG.IDLE_DURATION.min, CONFIG.IDLE_DURATION.max);
         addLog(`😴 Idle for ${Math.floor(pause / 1000)}s`, 'warning');
-        state.isChecking = true;
         state.idleTimeout = setTimeout(() => {
-            state.isChecking = false;
             state.idleTimeout = null;
         }, pause);
+    }
+
+    // === Единый основной цикл ===
+    function mainLoop() {
+        if (!state.isRunning) return;
+
+        state.tickCounter++;
+
+        // 1. Проверяем ошибку сети (приоритет)
+        if (checkNetworkError()) {
+            state.mainLoopTimeout = setTimeout(mainLoop, CONFIG.TICK_INTERVAL);
+            return;
+        }
+
+        // 2. Пытаемся кликнуть бонус (только если кэш валиден)
+        if (state.claimButtonCache.valid && !state.idleTimeout && !state.humanTimeout) {
+            tryClickBonus();
+            state.checks++;
+        }
+
+        // 3. Периодические задачи
+        if (state.tickCounter % CONFIG.BALANCE_CHECK_EVERY === 0) {
+            checkBalance();
+            updateUI();
+        }
+
+        if (state.tickCounter % CONFIG.CYCLE_EVERY === 0) {
+            startNewCycle();
+            updateUI();
+        }
+
+        // 4. Обновление UI каждые ~10 тиков
+        if (state.tickCounter % 10 === 0) {
+            updateUI();
+        }
+
+        // 5. Имитация поведения (редко)
+        const behaviorChance = Math.random();
+        if (!state.idleTimeout && !state.humanTimeout) {
+            if (behaviorChance < CONFIG.IDLE_BEHAVIOR_CHANCE) {
+                randomIdle();
+            } else if (behaviorChance < CONFIG.HUMAN_BEHAVIOR_CHANCE) {
+                humanBehavior();
+            }
+        }
+
+        state.mainLoopTimeout = setTimeout(mainLoop, CONFIG.TICK_INTERVAL);
+    }
+
+    // === MutationObserver для кнопки бонуса ===
+    function setupBonusObserver() {
+        if (state.bonusObserver) {
+            state.bonusObserver.disconnect();
+        }
+
+        state.bonusObserver = new MutationObserver((mutations) => {
+            // Проверяем, появились ли новые кнопки или исчезли старые
+            let shouldUpdate = false;
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (node.matches?.(CONFIG.SELECTORS.CLAIM) || 
+                                node.querySelector?.(CONFIG.SELECTORS.CLAIM)) {
+                                shouldUpdate = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (shouldUpdate) break;
+                    
+                    for (const node of mutation.removedNodes) {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (node.matches?.(CONFIG.SELECTORS.CLAIM) ||
+                                node.querySelector?.(CONFIG.SELECTORS.CLAIM)) {
+                                shouldUpdate = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (shouldUpdate) break;
+                }
+            }
+
+            if (shouldUpdate || !state.claimButtonCache.valid) {
+                // Debounce: обновляем не чаще раза в 500мс
+                if (!updateClaimButtonsCache._timer) {
+                    updateClaimButtonsCache._timer = setTimeout(() => {
+                        updateClaimButtonsCache();
+                        updateClaimButtonsCache._timer = null;
+                    }, 500);
+                }
+            }
+        });
+
+        state.bonusObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        // Начальное заполнение кэша
+        updateClaimButtonsCache();
     }
 
     // === Управление жизненным циклом ===
     function start() {
         if (state.isRunning) return;
+
         state.isRunning = true;
         state.startTime = Date.now();
+        state.tickCounter = 0;
         addLog('⚡ Initializing system...', 'info');
-        setTimeout(() => startNewCycle(), 500);
-        scheduleClick();
-        scheduleBalanceCheck();
-        scheduleCycle();
+
+        setupBonusObserver();
         scheduleUIUpdate();
+        mainLoop();
+
         updateUI();
-        setTimeout(() => addLog('✔️ System ready. Waiting for bonuses...', 'info'), 1000);
+
+        setTimeout(() => {
+            addLog('✔️ System ready. Waiting for bonuses...', 'info');
+        }, 1000);
     }
 
     function stop() {
         if (!state.isRunning) return;
+
         state.isRunning = false;
-        clearTimeout(state.clickTimeout);
-        clearTimeout(state.balanceTimeout);
-        clearTimeout(state.cycleTimeout);
+        clearTimeout(state.mainLoopTimeout);
         clearTimeout(state.uiUpdateTimeout);
         clearTimeout(state.idleTimeout);
         clearTimeout(state.humanTimeout);
-        state.clickTimeout = null;
-        state.balanceTimeout = null;
-        state.cycleTimeout = null;
+        state.mainLoopTimeout = null;
         state.uiUpdateTimeout = null;
         state.idleTimeout = null;
         state.humanTimeout = null;
-        if (state.observer) {
-            state.observer.disconnect();
-            state.observer = null;
+
+        if (state.bonusObserver) {
+            state.bonusObserver.disconnect();
+            state.bonusObserver = null;
         }
+
         const runtime = state.startTime ? Math.floor((Date.now() - state.startTime) / 1000) : 0;
         addLog(`⏸️ Script stopped. Time: ${runtime}s, Bonuses: ${state.clicks}`, 'warning');
+
         state.startTime = null;
-        state.isChecking = false;
         updateUI();
     }
 
     function destroy() {
         stop();
-        if (gui && gui.parentNode) gui.parentNode.removeChild(gui);
+        if (domCache.gui && domCache.gui.parentNode) domCache.gui.parentNode.removeChild(domCache.gui);
         if (style && style.parentNode) style.parentNode.removeChild(style);
 
         window.removeEventListener("keydown", keyHandler, true);
@@ -613,8 +732,7 @@
         document.removeEventListener("mouseup", mouseupHandler);
         document.removeEventListener('dblclick', dblclickHandler);
 
-        const header = document.getElementById('Twitchy-header');
-        if (header) header.removeEventListener("mousedown", mousedownHandler);
+        if (domCache.header) domCache.header.removeEventListener("mousedown", mousedownHandler);
 
         delete window.__TWITCHY_RUNNING__;
         console.log("❌ Script fully destroyed");
@@ -647,7 +765,6 @@
         const hasNewNode = mutations.some(m => m.addedNodes.length > 0);
         if (!hasNewNode) return;
         
-        // Throttle: не чаще раза в 2 секунды
         if (attachTimer) return;
         attachTimer = setTimeout(() => {
             attachTimer = null;
@@ -659,16 +776,16 @@
     function mousedownHandler(e) {
         if (e.target.tagName === 'BUTTON') return;
         state.isDragging = true;
-        state.dragOffset.x = e.clientX - gui.offsetLeft;
-        state.dragOffset.y = e.clientY - gui.offsetTop;
+        state.dragOffset.x = e.clientX - domCache.gui.offsetLeft;
+        state.dragOffset.y = e.clientY - domCache.gui.offsetTop;
     }
 
     function mousemoveHandler(e) {
         if (state.isDragging) {
             e.preventDefault();
-            gui.style.left = (e.clientX - state.dragOffset.x) + 'px';
-            gui.style.top = (e.clientY - state.dragOffset.y) + 'px';
-            gui.style.right = 'auto';
+            domCache.gui.style.left = (e.clientX - state.dragOffset.x) + 'px';
+            domCache.gui.style.top = (e.clientY - state.dragOffset.y) + 'px';
+            domCache.gui.style.right = 'auto';
         }
     }
 
@@ -677,8 +794,8 @@
     }
 
     function dblclickHandler(e) {
-        if (e.ctrlKey && gui.style.display === 'none') {
-            gui.style.display = 'block';
+        if (e.ctrlKey && domCache.gui.style.display === 'none') {
+            domCache.gui.style.display = 'block';
         }
     }
 
@@ -687,17 +804,16 @@
     });
 
     document.getElementById('Twitchy-hide').addEventListener('click', () => {
-        gui.style.display = 'none';
+        domCache.gui.style.display = 'none';
     });
 
     document.getElementById('Twitchy-minimize').addEventListener('click', () => {
-        gui.classList.toggle('minimized');
+        domCache.gui.classList.toggle('minimized');
         const btn = document.getElementById('Twitchy-minimize');
-        btn.textContent = gui.classList.contains('minimized') ? '+' : '−';
+        btn.textContent = domCache.gui.classList.contains('minimized') ? '+' : '−';
     });
 
-    const header = document.getElementById('Twitchy-header');
-    header.addEventListener('mousedown', mousedownHandler);
+    domCache.header.addEventListener('mousedown', mousedownHandler);
     document.addEventListener('mousemove', mousemoveHandler);
     document.addEventListener('mouseup', mouseupHandler);
     document.addEventListener('dblclick', dblclickHandler);
@@ -706,7 +822,7 @@
     addLog('📡 Waiting for start...', 'info');
     updateUI();
 
-    console.log('🎁 Twitch AutoClicker GUI loaded! (v2.6.0)');
+    console.log(`🎁 Twitch AutoClicker GUI loaded! (v${(typeof GM_info !== 'undefined') ? GM_info.script.version : '3.1.0'})`);
     console.log('💡 Click START to begin working');
     console.log('❗ Ctrl + X ends the scripts');
     if (sessionStorage.getItem('TwitchyAutoStart') === '1') {
