@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Auto Bonus Clicker
 // @namespace    https://github.com/ZeroStalker3/twitch-autoclicker
-// @version      3.1.0
+// @version      3.1.1
 // @description  Автоматический сбор бонусов на Twitch с GUI, логированием и имитацией поведения
 // @author       ZeroYz
 // @match        *://*.twitch.tv/*
@@ -30,10 +30,6 @@
         UI_UPDATE_INTERVAL: 1000,
         UI_UPDATE_THROTTLE: 100,
         MAX_LOG_ENTRIES: 50,
-        HUMAN_BEHAVIOR_CHANCE: 0.08,     // снижено: имитация реже
-        IDLE_BEHAVIOR_CHANCE: 0.03,
-        IDLE_DURATION: { min: 10000, max: 30000 },
-        HUMAN_PAUSE_DURATION: { min: 1000, max: 3000 },
         NETWORK_RETRY_COOLDOWN: 8000,
         NETWORK_MAX_ATTEMPTS: 3,
         SELECTORS: {
@@ -74,22 +70,14 @@
         dragOffset: { x: 0, y: 0 },
         mainLoopTimeout: null,
         uiUpdateTimeout: null,
-        idleTimeout: null,
-        humanTimeout: null,
         frameObserver: null,
-        bonusObserver: null,
-        claimButtonCache: {
-            nodes: [],
-            lastUpdate: 0,
-            valid: false
-        },
         network: {
             attempts: 0,
             lastClick: 0,
             lastStrongCheck: 0,
             lastStrongResult: false
         },
-        pendingClick: false
+        pendingClick: null
     };
 
     // === Стили ===
@@ -467,9 +455,36 @@
             addLog(`🔄 Network error! Refresh attempt ${state.network.attempts}...`, 'warning');
 
             if (state.network.attempts >= CONFIG.NETWORK_MAX_ATTEMPTS) {
-                addLog('⚠️ Refresh failed. Reloading page...', 'warning');
+                const MAX_RELOADS = 3;
+                const RELOAD_WINDOW = 15 * 60 * 1000; // Скользящее окно 15 минут
+                const reloadKey = 'TwitchyReloadCount';
+                const timeKey = 'TwitchyReloadTime';
+                
+                let count = parseInt(sessionStorage.getItem(reloadKey) || '0', 10);
+                let firstTime = parseInt(sessionStorage.getItem(timeKey) || '0', 10);
+                const now = Date.now();
+
+                if (now - firstTime > RELOAD_WINDOW) {
+                    count = 0;
+                    firstTime = now;
+                }
+
+                if (count >= MAX_RELOADS) {
+                    addLog('🛑 Лимит перезагрузок исчерпан. Требуется ручное вмешательство.', 'error');
+                    stop(); 
+                    return true;
+                }
+
+                count++;
+                sessionStorage.setItem(reloadKey, count.toString());
+                sessionStorage.setItem(timeKey, firstTime.toString());
                 sessionStorage.setItem('TwitchyAutoStart', '1');
-                setTimeout(() => location.reload(), 1000);
+
+                const backoff = Math.pow(2, count) * 2000; 
+                addLog(`⚠️ Сеть недоступна. Перезагрузка через ${backoff/1000}с...`, 'warning');
+                
+                setTimeout(() => location.reload(), backoff);
+                return true;
             }
             return true;
         } catch (e) {
@@ -491,36 +506,60 @@
         );
     }
 
-    // === Обновление кэша кнопок (вызывается MutationObserver) ===
-    function updateClaimButtonsCache() {
-        state.claimButtonCache.nodes = Array.from(document.querySelectorAll(CONFIG.SELECTORS.CLAIM));
-        state.claimButtonCache.valid = true;
-        state.claimButtonCache.lastUpdate = Date.now();
-    }
+    // === Основная логика (State Machine для кликов) ===
+    function findAndClickBonus() {
+        if (state.pendingClick) return; 
 
-    // === Основная логика ===
-    function tryClickBonus() {
-        if (!state.claimButtonCache.valid || state.claimButtonCache.nodes.length === 0) {
-            return false;
-        }
-
-        for (const button of state.claimButtonCache.nodes) {
-            // Проверяем, что кнопка ещё в DOM
+        const buttons = document.querySelectorAll(CONFIG.SELECTORS.CLAIM);
+        
+        for (const button of buttons) {
             if (!button.isConnected) continue;
+            if (button.disabled) continue;
 
-            const isHidden = button.getAttribute('aria-hidden') === 'true' ||
+            const isHidden = button.getAttribute('aria-hidden') === 'true' || 
                              button.closest('[aria-hidden="true"]');
 
             if (!isHidden && isClaimButton(button)) {
-                state.clicks++;
-                button.click();
-                const timeSinceStart = state.startTime ? Math.floor((Date.now() - state.startTime) / 1000) : 0;
-                addLog(`✅ Bonus received! (Total: ${state.clicks}, Time: ${timeSinceStart}s)`, 'success');
-                state.claimButtonCache.valid = false;
-                return true;
+                state.pendingClick = {
+                    element: button,
+                    time: Date.now()
+                };
+
+                // Возвращаем нативный click (isTrusted: true)
+                button.click(); 
+                addLog('⏳ Клик отправлен, ожидание подтверждения...', 'info');
+                return;
             }
         }
-        return false;
+    }
+
+    function checkPendingClick() {
+        if (!state.pendingClick) return;
+
+        const { element, time } = state.pendingClick;
+        const elapsed = Date.now() - time;
+
+        const isGone = !element.isConnected;
+        const isHidden = element.getAttribute('aria-hidden') === 'true' || 
+                         element.closest('[aria-hidden="true"]') ||
+                         element.disabled;
+                         
+        // Учитываем смену текста, если UI не удаляет кнопку
+        const btnText = (element.textContent || '').toLowerCase();
+        const isClaimed = btnText.includes('получено') || btnText.includes('claimed');
+
+        if (isGone || isHidden || isClaimed) {
+            state.clicks++;
+            const timeSinceStart = state.startTime ? Math.floor((Date.now() - state.startTime) / 1000) : 0;
+            addLog(`✅ Бонус получен! (Всего: ${state.clicks}, Время: ${timeSinceStart}с)`, 'success');
+            state.pendingClick = null;
+            return;
+        }
+
+        if (elapsed > 3000) {
+            addLog('❌ Таймаут подтверждения клика.', 'warning');
+            state.pendingClick = null;
+        }
     }
 
     function checkBalance() {
@@ -537,32 +576,6 @@
         addLog(`🔄 Starting cycle #${state.cycles}...`, 'cycle');
     }
 
-    // === Имитация поведения ===
-    function humanBehavior() {
-        const r = Math.random();
-        if (r < 0.3) {
-            window.scrollBy({ top: Math.random() * 300 - 150, behavior: 'smooth' });
-        } else if (r < 0.5) {
-            document.dispatchEvent(new MouseEvent('mousemove', {
-                clientX: Math.random() * window.innerWidth,
-                clientY: Math.random() * window.innerHeight,
-                bubbles: true
-            }));
-        } else if (r < 0.6) {
-            state.humanTimeout = setTimeout(() => {
-                state.humanTimeout = null;
-            }, rand(CONFIG.HUMAN_PAUSE_DURATION.min, CONFIG.HUMAN_PAUSE_DURATION.max));
-        }
-    }
-
-    function randomIdle() {
-        const pause = rand(CONFIG.IDLE_DURATION.min, CONFIG.IDLE_DURATION.max);
-        addLog(`😴 Idle for ${Math.floor(pause / 1000)}s`, 'warning');
-        state.idleTimeout = setTimeout(() => {
-            state.idleTimeout = null;
-        }, pause);
-    }
-
     // === Единый основной цикл ===
     function mainLoop() {
         if (!state.isRunning) return;
@@ -575,13 +588,16 @@
             return;
         }
 
-        // 2. Пытаемся кликнуть бонус (только если кэш валиден)
-        if (state.claimButtonCache.valid && !state.idleTimeout && !state.humanTimeout) {
-            tryClickBonus();
+        // 2. Проверяем результат предыдущего клика
+        checkPendingClick();
+
+        // 3. Ищем новую кнопку только если нет ожидающего клика
+        if (!state.pendingClick) {
+            findAndClickBonus();
             state.checks++;
         }
 
-        // 3. Периодические задачи
+        // 4. Периодические задачи
         if (state.tickCounter % CONFIG.BALANCE_CHECK_EVERY === 0) {
             checkBalance();
             updateUI();
@@ -592,77 +608,12 @@
             updateUI();
         }
 
-        // 4. Обновление UI каждые ~10 тиков
+        // 5. Обновление UI каждые ~10 тиков
         if (state.tickCounter % 10 === 0) {
             updateUI();
         }
 
-        // 5. Имитация поведения (редко)
-        const behaviorChance = Math.random();
-        if (!state.idleTimeout && !state.humanTimeout) {
-            if (behaviorChance < CONFIG.IDLE_BEHAVIOR_CHANCE) {
-                randomIdle();
-            } else if (behaviorChance < CONFIG.HUMAN_BEHAVIOR_CHANCE) {
-                humanBehavior();
-            }
-        }
-
         state.mainLoopTimeout = setTimeout(mainLoop, CONFIG.TICK_INTERVAL);
-    }
-
-    // === MutationObserver для кнопки бонуса ===
-    function setupBonusObserver() {
-        if (state.bonusObserver) {
-            state.bonusObserver.disconnect();
-        }
-
-        state.bonusObserver = new MutationObserver((mutations) => {
-            // Проверяем, появились ли новые кнопки или исчезли старые
-            let shouldUpdate = false;
-            for (const mutation of mutations) {
-                if (mutation.type === 'childList') {
-                    for (const node of mutation.addedNodes) {
-                        if (node.nodeType === Node.ELEMENT_NODE) {
-                            if (node.matches?.(CONFIG.SELECTORS.CLAIM) || 
-                                node.querySelector?.(CONFIG.SELECTORS.CLAIM)) {
-                                shouldUpdate = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (shouldUpdate) break;
-                    
-                    for (const node of mutation.removedNodes) {
-                        if (node.nodeType === Node.ELEMENT_NODE) {
-                            if (node.matches?.(CONFIG.SELECTORS.CLAIM) ||
-                                node.querySelector?.(CONFIG.SELECTORS.CLAIM)) {
-                                shouldUpdate = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (shouldUpdate) break;
-                }
-            }
-
-            if (shouldUpdate || !state.claimButtonCache.valid) {
-                // Debounce: обновляем не чаще раза в 500мс
-                if (!updateClaimButtonsCache._timer) {
-                    updateClaimButtonsCache._timer = setTimeout(() => {
-                        updateClaimButtonsCache();
-                        updateClaimButtonsCache._timer = null;
-                    }, 500);
-                }
-            }
-        });
-
-        state.bonusObserver.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-
-        // Начальное заполнение кэша
-        updateClaimButtonsCache();
     }
 
     // === Управление жизненным циклом ===
@@ -674,7 +625,6 @@
         state.tickCounter = 0;
         addLog('⚡ Initializing system...', 'info');
 
-        setupBonusObserver();
         scheduleUIUpdate();
         mainLoop();
 
@@ -691,17 +641,9 @@
         state.isRunning = false;
         clearTimeout(state.mainLoopTimeout);
         clearTimeout(state.uiUpdateTimeout);
-        clearTimeout(state.idleTimeout);
-        clearTimeout(state.humanTimeout);
         state.mainLoopTimeout = null;
         state.uiUpdateTimeout = null;
-        state.idleTimeout = null;
-        state.humanTimeout = null;
-
-        if (state.bonusObserver) {
-            state.bonusObserver.disconnect();
-            state.bonusObserver = null;
-        }
+        state.pendingClick = null; 
 
         const runtime = state.startTime ? Math.floor((Date.now() - state.startTime) / 1000) : 0;
         addLog(`⏸️ Script stopped. Time: ${runtime}s, Bonuses: ${state.clicks}`, 'warning');

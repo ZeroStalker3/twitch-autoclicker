@@ -11,7 +11,7 @@
 
 ## 📦 Установка
 1. Установите [Tampermonkey](https://www.tampermonkey.net/) или [Violentmonkey](https://violentmonkey.github.io/)
-2. Нажмите [Install](ссылка_на_greasyfork)
+2. Нажмите [Install](https://greasyfork.org/ru/scripts/588526-twitch-auto-bonus-clicker)
 3. Откройте любую страницу Twitch — появится панель управления
 
 ## ⌨️ Управление
